@@ -19,7 +19,6 @@ today_logs = []
 
 # Playwright（高機能な仮想ブラウザ）を起動
 with sync_playwright() as p:
-    # 画面を持たないブラウザを起動
     browser = p.chromium.launch(headless=True)
     page = browser.new_page()
 
@@ -30,9 +29,9 @@ with sync_playwright() as p:
     for page_num in range(1, 6):
         url = f"https://camp-fire.jp/projects/search?sort=new&page={page_num}"
         try:
-            # ページにアクセスし、通信が落ち着くまで待つ
-            page.goto(url, wait_until="networkidle", timeout=20000)
-            # 念のため、JavaScriptが画面を描画するのを追加で3秒待つ
+            # 【修正点】完全に静かになるのを待たず、基本の枠組みが読み込めたらOKとする
+            page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            # JavaScriptが中身を描画するのを3秒だけ待つ
             page.wait_for_timeout(3000)
             
             html = page.content()
@@ -103,7 +102,8 @@ with sync_playwright() as p:
                 continue
                 
             try:
-                page.goto(url, wait_until="networkidle", timeout=20000)
+                # 【修正点】ここも同様に修正
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
                 page.wait_for_timeout(2000)
                 
                 html = page.content()
