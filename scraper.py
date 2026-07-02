@@ -17,12 +17,9 @@ daily_file = 'daily_logs.csv'
 scraped_new_projects = []
 today_logs = []
 
-# 【新機能】合体事故を防ぐための、安全な数字フィルター
 def safe_extract_num(text):
     if not text: return 0
-    # 探す範囲を最初の100文字に制限して、関係ない数字を巻き込まないようにする
     text = str(text).strip()[:100]
-    # カンマ区切りの数字（例: 1,500,000）の塊だけを正確に抜き出す
     match = re.search(r'([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)', text)
     if match:
         try:
@@ -31,7 +28,6 @@ def safe_extract_num(text):
             return 0
     return 0
 
-# Playwright（高機能な仮想ブラウザ）を起動
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     page = browser.new_page()
@@ -67,6 +63,7 @@ with sync_playwright() as p:
                 else:
                     continue
                     
+                # 一覧ページでの残り日数
                 days_str = card.select_one('.footer-item.per') or card.select_one('[class*="per"]')
                 days_text = days_str.text if days_str else "0"
                 days_left = safe_extract_num(days_text)
@@ -81,7 +78,6 @@ with sync_playwright() as p:
         except Exception as e:
             print(f"{page_num}ページの取得中にエラー: {e}")
 
-    # 名簿の保存処理
     if scraped_new_projects:
         df_scraped_projects = pd.DataFrame(scraped_new_projects).drop_duplicates(subset=['project_url'])
     else:
@@ -118,40 +114,43 @@ with sync_playwright() as p:
                 html = page.content()
                 soup = BeautifulSoup(html, 'html.parser')
                 
-                # 金額の取得
+                # ① 現在の支援額（.backer-amount を最優先）
                 amount = 0
-                amount_element = soup.select_one('.footer-item.total') or soup.select_one('.total-amount') or soup.select_one('[class*="total"]')
+                amount_element = soup.select_one('.backer-amount') or soup.select_one('.footer-item.total') or soup.select_one('.total-amount')
                 if amount_element:
                     amount = safe_extract_num(amount_element.text)
-                if amount == 0:
-                    for target in soup.find_all(string=re.compile(r'現在')):
-                        amount = safe_extract_num(target.parent.text)
-                        if amount > 0: break
                 
-                # 支援者の取得
+                # ②【新機能】目標金額（.target-amount を最優先）
+                target_amount = 0
+                target_element = soup.select_one('.target-amount')
+                if target_element:
+                    target_amount = safe_extract_num(target_element.text)
+                
+                # ③【新機能】達成率（.percentage を最優先）
+                achievement_rate = 0
+                rate_element = soup.select_one('.percentage')
+                if rate_element:
+                    # 「217%」から数字の「217」だけを安全に抜き取る
+                    achievement_rate = safe_extract_num(rate_element.text)
+                
+                # ④ 支援者数
                 supporters = 0
-                supporters_element = soup.select_one('.footer-item.rest') or soup.select_one('.supporters') or soup.select_one('[class*="rest"]')
+                supporters_element = soup.select_one('.backers') or soup.select_one('.backer-count') or soup.select_one('.footer-item.rest')
                 if supporters_element:
                     supporters = safe_extract_num(supporters_element.text)
-                if supporters == 0:
-                    for target in soup.find_all(string=re.compile(r'支援者')):
-                        supporters = safe_extract_num(target.parent.text)
-                        if supporters > 0: break
                 
-                # 残り日数の取得
+                # ⑤ 残り日数（.days-left を最優先にアップデート）
                 days_left = 0
-                days_element = soup.select_one('.footer-item.per') or soup.select_one('.remain_days') or soup.select_one('[class*="per"]')
+                days_element = soup.select_one('.days-left') or soup.select_one('.time-remaining') or soup.select_one('.footer-item.per')
                 if days_element:
                     days_left = safe_extract_num(days_element.text)
-                if days_left == 0:
-                    for target in soup.find_all(string=re.compile(r'残り')):
-                        days_left = safe_extract_num(target.parent.text)
-                        if days_left > 0: break
                 
                 today_logs.append({
                     'date': today,
                     'project_url': url,
                     'current_amount': amount,
+                    'target_amount': target_amount,
+                    'achievement_rate': achievement_rate,
                     'supporters': supporters,
                     'days_left': days_left
                 })
@@ -167,33 +166,46 @@ if today_logs:
     print("昨日のデータと比較して、1日あたりの数字を計算します...")
     df_today = pd.DataFrame(today_logs)
     
+    # 新しく追加した列を含めた綺麗な並び順を定義
+    columns_order = [
+        'date', 'project_url', 'current_amount', 'target_amount', 'achievement_rate', 
+        'supporters', 'days_left', 'daily_amount', 'daily_supporters', 'daily_average_amount'
+    ]
+    
     if os.path.exists(daily_file):
         df_past = pd.read_csv(daily_file)
         if not df_past.empty:
             df_past_latest = df_past.sort_values('date').drop_duplicates(subset=['project_url'], keep='last')
+            
+            # 過去データとドッキング
             df_merged = pd.merge(df_today, df_past_latest[['project_url', 'current_amount', 'supporters']], 
                                  on='project_url', how='left', suffixes=('', '_past'))
+            
             df_merged['current_amount_past'] = df_merged['current_amount_past'].fillna(df_merged['current_amount'])
             df_merged['supporters_past'] = df_merged['supporters_past'].fillna(df_merged['supporters'])
+            
+            # 日次差分の計算
             df_merged['daily_amount'] = df_merged['current_amount'] - df_merged['current_amount_past']
             df_merged['daily_supporters'] = df_merged['supporters'] - df_merged['supporters_past']
             df_merged['daily_average_amount'] = df_merged.apply(
                 lambda row: int(row['daily_amount'] / row['daily_supporters']) if row['daily_supporters'] > 0 else 0,
                 axis=1
             )
-            df_final = df_merged[['date', 'project_url', 'current_amount', 'supporters', 'days_left', 'daily_amount', 'daily_supporters', 'daily_average_amount']]
+            df_final = df_merged[columns_order]
         else:
             for col in ['daily_amount', 'daily_supporters', 'daily_average_amount']:
                 df_today[col] = 0
-            df_final = df_today[['date', 'project_url', 'current_amount', 'supporters', 'days_left', 'daily_amount', 'daily_supporters', 'daily_average_amount']]
+            df_final = df_today[columns_order]
     else:
         for col in ['daily_amount', 'daily_supporters', 'daily_average_amount']:
             df_today[col] = 0
-        df_final = df_today[['date', 'project_url', 'current_amount', 'supporters', 'days_left', 'daily_amount', 'daily_supporters', 'daily_average_amount']]
+        df_final = df_today[columns_order]
 
+    # CSVへの保存（上書きまたは追記）
     if not os.path.exists(daily_file):
         df_final.to_csv(daily_file, mode='w', header=True, index=False)
     else:
+        # すでにファイルがある場合は、古い見出し行を壊さないように、データ行だけを追記する
         df_final.to_csv(daily_file, mode='a', header=False, index=False)
     print("すべての作業が完了しました！")
 else:
