@@ -1,0 +1,35 @@
+name: Daily CAMPFIRE Scraper
+
+on:
+  schedule:
+    # 毎日 日本時間の翌日0時15分（UTCの前日15時15分）に実行して前日分の丸1日を確定させる
+    - cron: '15 15 * * *'
+  workflow_dispatch: # ボタンを押して手動でいつでも動かせる設定
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: リポジトリのデータを読み込む
+      uses: actions/checkout@v3
+
+    - name: Pythonの準備
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: 必要な道具のインストール
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: プログラム（指示書）の実行
+      run: python scraper.py
+
+    - name: 変更されたCSVファイルを保存する
+      run: |
+        git config --global user.name 'GitHub Action Bot'
+        git config --global user.email 'action@github.com'
+        git add *.csv
+        git diff --quiet && git diff --staged --quiet || (git commit -m "日次データの更新" && git push)
