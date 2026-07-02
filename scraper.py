@@ -8,7 +8,6 @@ from playwright.sync_api import sync_playwright
 # ==========================================
 # 準備：今日の日付と道具の設定
 # ==========================================
-# 夜中に動くため、日付を1日巻き戻して「昨日分」として記録する
 today_dt = datetime.date.today() - datetime.timedelta(days=1)
 today = today_dt.strftime('%Y-%m-%d')
 print(f"{today} 分のデータとして記録を開始します（実行日: {datetime.date.today().strftime('%Y-%m-%d')}）")
@@ -17,6 +16,20 @@ projects_file = 'projects.csv'
 daily_file = 'daily_logs.csv'
 scraped_new_projects = []
 today_logs = []
+
+# 【新機能】合体事故を防ぐための、安全な数字フィルター
+def safe_extract_num(text):
+    if not text: return 0
+    # 探す範囲を最初の100文字に制限して、関係ない数字を巻き込まないようにする
+    text = str(text).strip()[:100]
+    # カンマ区切りの数字（例: 1,500,000）の塊だけを正確に抜き出す
+    match = re.search(r'([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)', text)
+    if match:
+        try:
+            return int(match.group(1).replace(',', ''))
+        except:
+            return 0
+    return 0
 
 # Playwright（高機能な仮想ブラウザ）を起動
 with sync_playwright() as p:
@@ -31,25 +44,21 @@ with sync_playwright() as p:
         url = f"https://camp-fire.jp/projects/search?sort=new&page={page_num}"
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            page.wait_for_timeout(3000) # 描画を3秒待つ
+            page.wait_for_timeout(3000)
             
             html = page.content()
             soup = BeautifulSoup(html, 'html.parser')
             
-            # 【新目印】Svelte対応の新しいカードの箱を探す
             cards = soup.select('li.card-wrapper') or soup.select('.card') or soup.select('[class*="card-wrapper"]')
             
             for card in cards:
-                # 【新目印】タイトルの取得
                 title_tag = card.select_one('h2.name') or card.select_one('[class*="name"]')
                 title = title_tag.text.strip() if title_tag else "タイトル不明"
                 
-                # 【新目岩】URLの取得と整形
                 a_tag = card.select_one('a.card') or card.find('a')
                 raw_link = a_tag['href'] if a_tag and a_tag.has_attr('href') else ""
                 
                 if raw_link:
-                    # URLからプロジェクトID（数字）を抜き出して綺麗なURLに統一する
                     match = re.search(r'/projects/(\d+)', raw_link)
                     if match:
                         link = f"https://camp-fire.jp/projects/{match.group(1)}"
@@ -58,10 +67,9 @@ with sync_playwright() as p:
                 else:
                     continue
                     
-                # 【新目印】残り日数の取得
                 days_str = card.select_one('.footer-item.per') or card.select_one('[class*="per"]')
                 days_text = days_str.text if days_str else "0"
-                days_left = int(re.sub(r'\D', '', days_text)) if re.sub(r'\D', '', days_text) else 0
+                days_left = safe_extract_num(days_text)
                 
                 end_date = (today_dt + datetime.timedelta(days=days_left)).strftime('%Y-%m-%d')
                     
@@ -110,35 +118,35 @@ with sync_playwright() as p:
                 html = page.content()
                 soup = BeautifulSoup(html, 'html.parser')
                 
-                # --- 金額の取得（クラス名 ＋ 文字列探知のハイブリッド） ---
+                # 金額の取得
                 amount = 0
-                amount_element = soup.select_one('.footer-item.total') or soup.select_one('.total-amount') or soup.select_one('[class*="total"]') or soup.select_one('[class*="amount"]')
+                amount_element = soup.select_one('.footer-item.total') or soup.select_one('.total-amount') or soup.select_one('[class*="total"]')
                 if amount_element:
-                    amount = int(re.sub(r'\D', '', amount_element.text)) if re.sub(r'\D', '', amount_element.text) else 0
-                if amount == 0: # バックアップ：画面上の「現在」という文字の親要素から数字を抜く
-                    for target in soup.find_all(text=re.compile(r'現在')):
-                        digits = re.sub(r'\D', '', target.parent.text)
-                        if digits: amount = int(digits); break
+                    amount = safe_extract_num(amount_element.text)
+                if amount == 0:
+                    for target in soup.find_all(string=re.compile(r'現在')):
+                        amount = safe_extract_num(target.parent.text)
+                        if amount > 0: break
                 
-                # --- 支援者の取得（クラス名 ＋ 文字列探知のハイブリッド） ---
+                # 支援者の取得
                 supporters = 0
-                supporters_element = soup.select_one('.footer-item.rest') or soup.select_one('.supporters') or soup.select_one('[class*="rest"]') or soup.select_one('[class*="supporter"]')
+                supporters_element = soup.select_one('.footer-item.rest') or soup.select_one('.supporters') or soup.select_one('[class*="rest"]')
                 if supporters_element:
-                    supporters = int(re.sub(r'\D', '', supporters_element.text)) if re.sub(r'\D', '', supporters_element.text) else 0
-                if supporters == 0: # バックアップ：画面上の「支援者」という文字から数字を抜く
-                    for target in soup.find_all(text=re.compile(r'支援者')):
-                        digits = re.sub(r'\D', '', target.parent.text)
-                        if digits: supporters = int(digits); break
+                    supporters = safe_extract_num(supporters_element.text)
+                if supporters == 0:
+                    for target in soup.find_all(string=re.compile(r'支援者')):
+                        supporters = safe_extract_num(target.parent.text)
+                        if supporters > 0: break
                 
-                # --- 残り日数の取得 ---
+                # 残り日数の取得
                 days_left = 0
-                days_element = soup.select_one('.footer-item.per') or soup.select_one('.remain_days') or soup.select_one('[class*="per"]') or soup.select_one('[class*="remain"]')
+                days_element = soup.select_one('.footer-item.per') or soup.select_one('.remain_days') or soup.select_one('[class*="per"]')
                 if days_element:
-                    days_left = int(re.sub(r'\D', '', days_element.text)) if re.sub(r'\D', '', days_element.text) else 0
-                if days_left == 0: # バックアップ：画面上の「残り」という文字から数字を抜く
-                    for target in soup.find_all(text=re.compile(r'残り')):
-                        digits = re.sub(r'\D', '', target.parent.text)
-                        if digits: days_left = int(digits); break
+                    days_left = safe_extract_num(days_element.text)
+                if days_left == 0:
+                    for target in soup.find_all(string=re.compile(r'残り')):
+                        days_left = safe_extract_num(target.parent.text)
+                        if days_left > 0: break
                 
                 today_logs.append({
                     'date': today,
@@ -175,14 +183,12 @@ if today_logs:
             )
             df_final = df_merged[['date', 'project_url', 'current_amount', 'supporters', 'days_left', 'daily_amount', 'daily_supporters', 'daily_average_amount']]
         else:
-            df_today['daily_amount'] = 0
-            df_today['daily_supporters'] = 0
-            df_today['daily_average_amount'] = 0
+            for col in ['daily_amount', 'daily_supporters', 'daily_average_amount']:
+                df_today[col] = 0
             df_final = df_today[['date', 'project_url', 'current_amount', 'supporters', 'days_left', 'daily_amount', 'daily_supporters', 'daily_average_amount']]
     else:
-        df_today['daily_amount'] = 0
-        df_today['daily_supporters'] = 0
-        df_today['daily_average_amount'] = 0
+        for col in ['daily_amount', 'daily_supporters', 'daily_average_amount']:
+            df_today[col] = 0
         df_final = df_today[['date', 'project_url', 'current_amount', 'supporters', 'days_left', 'daily_amount', 'daily_supporters', 'daily_average_amount']]
 
     if not os.path.exists(daily_file):
