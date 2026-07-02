@@ -63,7 +63,6 @@ with sync_playwright() as p:
                 else:
                     continue
                     
-                # 一覧ページでの残り日数
                 days_str = card.select_one('.footer-item.per') or card.select_one('[class*="per"]')
                 days_text = days_str.text if days_str else "0"
                 days_left = safe_extract_num(days_text)
@@ -114,32 +113,31 @@ with sync_playwright() as p:
                 html = page.content()
                 soup = BeautifulSoup(html, 'html.parser')
                 
-                # ① 現在の支援額（.backer-amount を最優先）
+                # ① 現在の支援額
                 amount = 0
                 amount_element = soup.select_one('.backer-amount') or soup.select_one('.footer-item.total') or soup.select_one('.total-amount')
                 if amount_element:
                     amount = safe_extract_num(amount_element.text)
                 
-                # ②【新機能】目標金額（.target-amount を最優先）
+                # ② 目標金額
                 target_amount = 0
                 target_element = soup.select_one('.target-amount')
                 if target_element:
                     target_amount = safe_extract_num(target_element.text)
                 
-                # ③【新機能】達成率（.percentage を最優先）
+                # ③ 達成率
                 achievement_rate = 0
                 rate_element = soup.select_one('.percentage')
                 if rate_element:
-                    # 「217%」から数字の「217」だけを安全に抜き取る
                     achievement_rate = safe_extract_num(rate_element.text)
                 
-                # ④ 支援者数
+                # ④ 【修正完了！】支援者数（.backer を追加）
                 supporters = 0
-                supporters_element = soup.select_one('.backers') or soup.select_one('.backer-count') or soup.select_one('.footer-item.rest')
+                supporters_element = soup.select_one('.backer') or soup.select_one('.backers') or soup.select_one('.backer-count') or soup.select_one('.footer-item.rest')
                 if supporters_element:
                     supporters = safe_extract_num(supporters_element.text)
                 
-                # ⑤ 残り日数（.days-left を最優先にアップデート）
+                # ⑤ 残り日数
                 days_left = 0
                 days_element = soup.select_one('.days-left') or soup.select_one('.time-remaining') or soup.select_one('.footer-item.per')
                 if days_element:
@@ -166,7 +164,6 @@ if today_logs:
     print("昨日のデータと比較して、1日あたりの数字を計算します...")
     df_today = pd.DataFrame(today_logs)
     
-    # 新しく追加した列を含めた綺麗な並び順を定義
     columns_order = [
         'date', 'project_url', 'current_amount', 'target_amount', 'achievement_rate', 
         'supporters', 'days_left', 'daily_amount', 'daily_supporters', 'daily_average_amount'
@@ -176,15 +173,10 @@ if today_logs:
         df_past = pd.read_csv(daily_file)
         if not df_past.empty:
             df_past_latest = df_past.sort_values('date').drop_duplicates(subset=['project_url'], keep='last')
-            
-            # 過去データとドッキング
             df_merged = pd.merge(df_today, df_past_latest[['project_url', 'current_amount', 'supporters']], 
                                  on='project_url', how='left', suffixes=('', '_past'))
-            
             df_merged['current_amount_past'] = df_merged['current_amount_past'].fillna(df_merged['current_amount'])
             df_merged['supporters_past'] = df_merged['supporters_past'].fillna(df_merged['supporters'])
-            
-            # 日次差分の計算
             df_merged['daily_amount'] = df_merged['current_amount'] - df_merged['current_amount_past']
             df_merged['daily_supporters'] = df_merged['supporters'] - df_merged['supporters_past']
             df_merged['daily_average_amount'] = df_merged.apply(
@@ -201,11 +193,9 @@ if today_logs:
             df_today[col] = 0
         df_final = df_today[columns_order]
 
-    # CSVへの保存（上書きまたは追記）
     if not os.path.exists(daily_file):
         df_final.to_csv(daily_file, mode='w', header=True, index=False)
     else:
-        # すでにファイルがある場合は、古い見出し行を壊さないように、データ行だけを追記する
         df_final.to_csv(daily_file, mode='a', header=False, index=False)
     print("すべての作業が完了しました！")
 else:
